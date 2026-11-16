@@ -48,7 +48,7 @@ public:
         i.name = "MasterClip";
         i.vendor = "PluginBooth";
         i.uniqueId = MPC_FOURCC('P', 's', 'M', 'c');   // == "uid" in plugin.json
-        i.version = 1000;                               // 1.0.0.0
+        i.version = 1001;                               // 1.0.1
         i.isInstrument = false;
         i.numInputs = 2;
         i.numOutputs = 2;

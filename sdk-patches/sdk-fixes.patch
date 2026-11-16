@@ -1,0 +1,138 @@
+diff --git a/framework/mpc_plugin.h b/framework/mpc_plugin.h
+index dbf239b..e041075 100644
+--- a/framework/mpc_plugin.h
++++ b/framework/mpc_plugin.h
+@@ -32,6 +32,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #if defined(_WIN32)
+@@ -379,12 +380,12 @@ public:
+     int   getInt(int i) const { return (int)std::lround(get(i)); }
+     void  setNormalised(int i, float norm)
+     {
+-        if (i < 0 || i >= numParams()) return;
++        if (i < 0 || i >= numParams() || !std::isfinite(norm)) return;
+         norm = clamp(norm, 0.0f, 1.0f);
+         values_[(size_t)i]->store(norm, std::memory_order_relaxed);
+         parameterChanged(i, params_[(size_t)i].toPlain(norm));
+     }
+-    void  set(int i, float plain) { if (i >= 0 && i < numParams()) setNormalised(i, params_[(size_t)i].toNormalised(plain)); }
++    void  set(int i, float plain) { if (i >= 0 && i < numParams() && std::isfinite(plain)) setNormalised(i, params_[(size_t)i].toNormalised(plain)); }
+ 
+     // Tell the host a parameter moved (e.g. from a MIDI CC). Not from the audio thread if avoidable.
+     void notifyHostParameterChanged(int i)
+@@ -514,31 +515,53 @@ public:
+     {
+         if (data == nullptr || size < 12 || std::memcmp(data, "MPCP", 4) != 0) return false;
+         size_t pos = 4;
+-        auto getU32 = [&](uint32_t& v) { if (pos + 4 > size) return false; v = 0; for (int i = 0; i < 4; ++i) v |= (uint32_t)data[pos + (size_t)i] << (8 * i); pos += 4; return true; };
++        auto getU32 = [&](uint32_t& v) {
++            if (pos > size || size - pos < 4) return false;
++            v = 0;
++            for (int i = 0; i < 4; ++i) v |= (uint32_t)data[pos + (size_t)i] << (8 * i);
++            pos += 4;
++            return true;
++        };
+         uint32_t version = 0, n = 0;
+-        if (!getU32(version) || !getU32(n)) return false;
++        if (!getU32(version) || !getU32(n) || (version != 1 && version != 2)) return false;
++        std::vector<std::pair<int, float>> pending;
++        pending.reserve(params_.size());
+         for (uint32_t k = 0; k < n; ++k)
+         {
+             if (pos >= size) return false;
+-            uint8_t idLen = data[pos++];
+-            if (pos + idLen + 4 > size) return false;
+-            std::string id(reinterpret_cast<const char*>(data + pos), idLen); pos += idLen;
+-            uint32_t bits; getU32(bits); float plain; std::memcpy(&plain, &bits, 4);
++            const uint8_t idLen = data[pos++];
++            if (idLen > size - pos) return false;
++            const std::string id(reinterpret_cast<const char*>(data + pos), idLen);
++            pos += idLen;
++            uint32_t bits = 0;
++            if (!getU32(bits)) return false;
++            float plain;
++            std::memcpy(&plain, &bits, 4);
++            if (!std::isfinite(plain)) return false;
+             float norm = -1.0f;
+-            if (version >= 2) { if (pos + 4 > size) return false; getU32(bits); std::memcpy(&norm, &bits, 4); }
++            if (version == 2)
++            {
++                if (!getU32(bits)) return false;
++                std::memcpy(&norm, &bits, 4);
++                if (!std::isfinite(norm)) return false;
++            }
+             for (int i = 0; i < numParams(); ++i)
+             {
+-                if (params_[(size_t)i].id != id) continue;
+                 const Param& pr = params_[(size_t)i];
+-                if (norm >= 0.0f && norm <= 1.0f && std::fabs(pr.toPlain(norm) - plain) <= 1e-4f * (1.0f + std::fabs(plain)))
+-                    setNormalised(i, norm);
+-                else
+-                    set(i, plain);
++                if (pr.id != id) continue;
++                const bool exact = norm >= 0.0f && norm <= 1.0f
++                    && std::fabs(pr.toPlain(norm) - plain) <= 1e-4f * (1.0f + std::fabs(plain));
++                const float restored = exact ? norm : pr.toNormalised(plain);
++                if (!std::isfinite(restored)) return false;
++                pending.emplace_back(i, restored);
+                 break;
+             }
+         }
+         uint32_t extraLen = 0;
+-        if (getU32(extraLen) && pos + extraLen <= size && extraLen > 0) loadExtraState(data + pos, extraLen);
++        if (!getU32(extraLen) || extraLen != size - pos) return false;
++        // Validate the entire buffer before changing controls; subtraction cannot wrap on ARM32.
++        for (const auto& value : pending) setNormalised(value.first, value.second);
++        if (extraLen > 0) loadExtraState(data + pos, extraLen);
+         stateLoadPending_.store(true, std::memory_order_release);
+         return true;
+     }
+@@ -628,9 +651,9 @@ protected:
+     MidiEvent midiIn_[kMaxMidiEvents];
+     int numMidiIn_ = 0;
+     MidiEvent midiOut_[kMaxMidiEvents];
+-    VstMidiEvent midiOutVst_[kMaxMidiEvents];
+-    VstEvent* midiOutPtrs_[kMaxMidiEvents];
+-    alignas(VstEvents) char midiOutEventsStorage_[sizeof(VstEvents) + sizeof(VstEvent*) * kMaxMidiEvents];
++    VstMidiEvent midiOutVst_[kMaxMidiEvents]{};
++    VstEvent* midiOutPtrs_[kMaxMidiEvents]{};
++    alignas(VstEvents) char midiOutEventsStorage_[sizeof(VstEvents) + sizeof(VstEvent*) * kMaxMidiEvents]{};
+     int numMidiOut_ = 0;
+ };
+ 
+@@ -694,7 +717,7 @@ inline VstIntPtr dispatcher(AEffect* e, VstInt32 opcode, VstInt32 index, VstIntP
+         {
+             if (index < 0 || index >= p->numParams() || ptr == nullptr) return 0;
+             VstParameterProperties* pp = static_cast<VstParameterProperties*>(ptr);
+-            std::memset(pp, 0, sizeof(*pp));
++            *pp = VstParameterProperties{};
+             const Param& pr = p->param(index);
+             copyString(pp->label, sizeof(pp->label), pr.name.c_str());
+             copyString(pp->shortLabel, sizeof(pp->shortLabel), pr.name.c_str());
+diff --git a/tools/host-sim/host_sim.cpp b/tools/host-sim/host_sim.cpp
+index 0ffece7..8211cda 100644
+--- a/tools/host-sim/host_sim.cpp
++++ b/tools/host-sim/host_sim.cpp
+@@ -1248,7 +1248,6 @@ static int runTest(const std::string& path, const TestOptions& opt)
+ 
+             setPhase("effSetChunk");
+             VstIntPtr ok = disp(e, effSetChunk, 0, n, saved.data());
+-            r.run("render (after effSetChunk)", 2.0 * opt.block / opt.sr, opt.block, none, !instrument, false, false, nullptr);
+             int bad = 0, quant = 0;
+             for (int i = 0; i < numParams; ++i)
+             {
+@@ -1273,6 +1272,9 @@ static int runTest(const std::string& path, const TestOptions& opt)
+             else
+                 rep.warn("state round-trip: re-saved chunk differs from the original (%ld vs %ld bytes) - fine if your state has non-parameter content", (long)n2, (long)n);
+ 
++            // Compare restored values before audio updates live meters, then test processing as before.
++            r.run("render (after effSetChunk)", 2.0 * opt.block / opt.sr, opt.block, none, !instrument, false, false, nullptr);
++
+             // Robustness: garbage must not crash or corrupt.
+             uint8_t junk[64];
+             for (uint8_t& b : junk) b = (uint8_t)(rng() & 0xff);

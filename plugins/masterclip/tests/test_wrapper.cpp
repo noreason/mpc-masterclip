@@ -7,6 +7,7 @@
 #include "../presets/presets.h"
 
 #include <cstring>
+#include <limits>
 
 using namespace cat::test;
 
@@ -37,6 +38,56 @@ int main(int argc, char** argv)
         std::vector<float> l = defaultTestSignal(), r = l;
         p.process(l, r, 128);
         h.check(p.display(9)[0] == '-', "clip readout", "0.2 s into a drum loop at Input +12 dB the readout shows '%s'", p.display(9).c_str());
+    }
+
+    h.section("MasterClip: malformed state is rejected without changing controls");
+    {
+        VstPlugin source(spec.libPath), target(spec.libPath);
+        source.set(1, 0.85f);
+        const auto valid = source.chunk();
+        const auto unchanged = target.chunk();
+        auto putU32 = [](std::vector<uint8_t>& bytes, size_t at, uint32_t value) {
+            for (int k = 0; k < 4; ++k) bytes[at + (size_t)k] = (uint8_t)(value >> (8 * k));
+        };
+        auto putFloat = [&](std::vector<uint8_t>& bytes, size_t at, float value) {
+            uint32_t bits; std::memcpy(&bits, &value, 4); putU32(bytes, at, bits);
+        };
+        size_t firstPlain = 12 + 1 + valid[12];
+        size_t inputPlain = firstPlain + 8;
+        inputPlain += 1 + valid[inputPlain];
+        for (bool normalized : { false, true })
+        {
+            for (float value : { std::numeric_limits<float>::quiet_NaN(), INFINITY, -INFINITY })
+            {
+                auto bad = valid;
+                putFloat(bad, inputPlain + (normalized ? 4 : 0), value);
+                const bool rejected = !target.setChunk(bad);
+                h.check(rejected && target.chunk() == unchanged, normalized ? "non-finite normalized state rejected" : "non-finite plain state rejected",
+                        "invalid float rejected before any parameter changes");
+            }
+        }
+        auto truncated = valid;
+        truncated.pop_back();
+        h.check(!target.setChunk(truncated) && target.chunk() == unchanged, "truncated extra state rejected atomically");
+        auto future = valid;
+        putU32(future, 4, 99);
+        h.check(!target.setChunk(future) && target.chunk() == unchanged, "unsupported state version rejected atomically");
+        std::vector<uint8_t> overflow = { 'M', 'P', 'C', 'P', 2, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255 };
+        h.check(!target.setChunk(overflow) && target.chunk() == unchanged, "oversized extra length rejected", "UINT32_MAX cannot bypass the remaining-buffer check on ARM32");
+        std::vector<uint8_t> legacy = { 'M', 'P', 'C', 'P', 1, 0, 0, 0, 1, 0, 0, 0, 5, 'i', 'n', 'p', 'u', 't' };
+        legacy.resize(legacy.size() + 8, 0);
+        putFloat(legacy, 18, 12.0f);
+        h.check(target.setChunk(legacy) && std::fabs(target.get(1) - 2.0f / 3.0f) < 1e-6f, "version-1 state remains compatible");
+    }
+
+    h.section("MasterClip: non-finite host automation cannot poison controls");
+    {
+        VstPlugin p(spec.libPath);
+        const float before = p.get(1);
+        p.set(1, std::numeric_limits<float>::quiet_NaN());
+        h.check(p.get(1) == before, "NaN automation ignored");
+        p.set(1, INFINITY);
+        h.check(p.get(1) == before, "infinite automation ignored");
     }
 
     h.section("MasterClip: factory presets");

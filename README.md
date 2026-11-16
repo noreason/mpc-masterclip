@@ -10,7 +10,8 @@ true peaks, and should not be presented as a true-peak limiter.
 ## Build with PluginBooth
 
 Paste this repository's GitHub URL into **Creator Studio → Publish → Submit from
-GitHub**. PluginBooth's supported SDK recipe builds ARM32 and ARM64 variants,
+GitHub**. This saves the repository for administrator review; it does not start
+processing. When an administrator starts it, PluginBooth's SDK recipe builds ARM32 and ARM64 variants,
 runs source analysis and the native host simulator, and validates the package.
 Completed builds and reports appear in Creator Studio. A build with warnings may
 show findings; these are visible evidence, not a safety certification. Hardware
@@ -19,17 +20,21 @@ not be inferred from a successful build.
 
 A build without failed checks can create a private listing draft. Confirm the
 tested MPC models and review the description before submitting it for moderation.
-Existing local device notes do not certify a newly generated binary. See the
-current simulator finding below before expecting a draft from this version.
+Existing local device notes do not certify a newly generated binary. Automated
+checks must finish before a draft can be created.
 
 ## Build locally
 
 Use the inMusic MPC Plugin SDK pinned at
-`febd2ca5bd9eb16c4a412837196e145566bc981b`:
+`febd2ca5bd9eb16c4a412837196e145566bc981b`, with the bundled
+`sdk-patches/sdk-fixes.patch` applied. The site builder applies the same patch
+from its trusted image, never by running a repository setup script:
 
 ```sh
 git clone https://github.com/inmusic-software/mpc-plugin-builder-sdk.git ../mpc-plugin-builder-sdk
 git -C ../mpc-plugin-builder-sdk checkout febd2ca5bd9eb16c4a412837196e145566bc981b
+git -C ../mpc-plugin-builder-sdk apply --check ../mpc-masterclip/sdk-patches/sdk-fixes.patch
+git -C ../mpc-plugin-builder-sdk apply ../mpc-masterclip/sdk-patches/sdk-fixes.patch
 python3 ../mpc-plugin-builder-sdk/tools/build.py . --toolchain gcc
 ```
 
@@ -61,19 +66,23 @@ notices are also included in `Content/Notices/` so SDK-built ZIPs carry them.
 
 - Existing DSP suite: **42 passed, 0 failed**, under AddressSanitizer and
   UndefinedBehaviorSanitizer.
-- Existing wrapper suite: **29 passed, 0 failed**, with the same sanitizers,
+- Wrapper suite: **41 passed, 0 failed**, with the same sanitizers,
   including saved control state, malformed chunks, meters, presets and parameter
   append compatibility. Leak detection was disabled in the restricted test sandbox;
   these results do not constitute a leak scan.
 - The production-style SDK recipe compiled ARM32 and ARM64, validated the manifest,
   UI assets and exported plugin entry point, and included both license notices.
-- **Known generic simulator finding:** the pinned SDK simulator compares every
-  parameter after rendering more audio following state restoration. MasterClip's
-  live `In L` / `In R` meters change with the next block, so this check reports a
-  state-restoration failure for them. The dedicated wrapper suite verifies that
-  saved controls restore and live meters update as designed. This is an identified
-  test limitation, not a suppressed pass: PluginBooth currently displays the runtime
-  finding and holds automatic draft creation for this build.
+- Version 1.0.1 includes a pinned SDK correction: malformed, truncated, non-finite
+  and unsupported-version state chunks are rejected before controls change;
+  extra-state length checks cannot wrap on ARM32; non-finite host automation is
+  ignored; and SDK MIDI storage is value-initialized. Version-1 chunks and appended
+  parameter compatibility remain covered by tests.
+- The simulator compares every parameter and the re-saved chunk immediately after
+  restoring state, then renders audio. This preserves the state test without
+  incorrectly expecting live input meters to remain frozen after processing.
+- The SDK patch SHA-256 is
+  `b6a50b98f99cd689b4ff074e3682e22a91d59af6e91e3d1cdcec2c6c94f90f92`.
+  PluginBooth records that digest alongside the upstream SDK commit in build reports.
 
 These checks do not establish performance or reliability on MPC hardware. Keep
 findings visible and review the generated report before distributing a build.
