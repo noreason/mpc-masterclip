@@ -1,0 +1,17 @@
+{
+  "name": "MasterClip",
+  "manufacturer": "PluginBooth",
+  "version": "1.0.0",
+  "format": "vst2",
+  "kind": "effect",
+  "uid": "PsMc",
+  "category": "Mastering",
+  "numInputs": 2,
+  "numOutputs": 2,
+  "file32": "VST/masterclip-arm32.so",
+  "file64": "VST/masterclip-arm64.so",
+  "description": "Stereo clipper with a guaranteed sample-peak ceiling, Hard/Soft/Warm curves and zero-latency 2x/4x oversampling.",
+  "license": "MIT",
+  "author": "PluginBooth",
+  "url": "https://github.com/noreason/mpc-masterclip"
+}

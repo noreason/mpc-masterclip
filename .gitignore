@@ -1,0 +1,6 @@
+build/
+.sdk-tools/
+__pycache__/
+*.log
+test-output/
+.DS_Store
